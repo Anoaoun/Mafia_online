@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mafia Card — Online (Max 12)</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#7dd3fc}
+    body{font-family:Inter,system-ui,Arial; background:var(--bg); color:#e6eef6; margin:0; padding:18px;}
+    .wrap{max-width:980px;margin:12px auto}
+    header{display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:20px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent); padding:16px;border-radius:12px; box-shadow:0 6px 18px rgba(2,6,23,0.6);}
+    input,select,button{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.05);background:transparent;color:inherit}
+    button{cursor:pointer}
+    .row{display:flex;gap:10px;align-items:center}
+    .players{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+    .player{padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);text-align:left}
+    small{color:var(--muted)}
+    .hidden{display:none}
+    .actions{margin-top:12px}
+    .log{margin-top:12px;background:#071021;padding:10px;border-radius:8px;max-height:220px;overflow:auto}
+    .role-badge{display:inline-block;padding:4px 8px;border-radius:8px;background:rgba(125,211,252,0.12);color:var(--accent);font-weight:600}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Mafia Card — Online (Max 12 players)</h1>
+      <small>Roles: Mafia, Detective, Doctor, Citizen</small>
+    </header>
+
+    <div class="card" id="lobby">
+      <div class="row">
+        <input id="nameInput" placeholder="Your name (optional)" />
+        <input id="roomInput" placeholder="Room code (or create)" />
+        <button id="createBtn">Create Room</button>
+        <button id="joinBtn">Join Room</button>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <small>Host controls appear when you are the host. Max players: 12</small>
+      </div>
+
+      <div id="lobbyInfo" class="hidden" style="margin-top:12px">
+        <div class="row"><strong>Room:</strong> <span id="roomCode" style="margin-left:8px"></span></div>
+        <div class="row" style="margin-top:8px">
+          <button id="startBtn" class="hidden">Start Game (assign roles)</button>
+          <button id="syncBtn" class="hidden">Sync Now</button>
+        </div>
+
+        <div class="players card" id="playersGrid"></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="gameArea">
+      <div class="row"><strong>You:</strong> <span id="youName"></span> <span id="youRole" style="margin-left:10px"></span></div>
+      <div class="row" style="margin-top:10px">
+        <div id="phaseDisplay"><small>Phase:</small> <strong id="phaseText">waiting</strong></div>
+        <div style="flex:1"></div>
+        <div id="hostControls" class="hidden">
+          <button id="endNightBtn" class="hidden">End Night → Resolve</button>
+          <button id="endDayBtn" class="hidden">End Day → Tally Votes</button>
+        </div>
+      </div>
+
+      <div id="nightPanel" class="hidden">
+        <h3>Night Actions</h3>
+        <div id="nightInstructions"></div>
+        <div id="nightTargets"></div>
+        <div class="actions">
+          <button id="submitNight" class="hidden">Submit Night Action</button>
+        </div>
+      </div>
+
+      <div id="dayPanel" class="hidden">
+        <h3>Day — Discussion & Voting</h3>
+        <div id="voteTargets"></div>
+        <div class="actions"><button id="submitVote">Vote</button></div>
+      </div>
+
+      <div class="log" id="log"></div>
+    </div>
+
+    <footer style="margin-top:14px"><small>Note: replace firebaseConfig in the code with your project's config. Use Realtime Database. For testing set DB rules to public (not for production).</small></footer>
+  </div>
+
+  <!-- Firebase SDK (v9 modular) -->
+  <script type="module">
+    // IMPORTANT: Replace with your Firebase config (web app) from console
+    const firebaseConfig = {
+      apiKey: "REPLACE_ME",
+      authDomain: "REPLACE_ME",
+      databaseURL: "REPLACE_ME", // e.g. https://your-app-default-rtdb.firebaseio.com
+      projectId: "REPLACE_ME",
+      storageBucket: "REPLACE_ME",
+      messagingSenderId: "REPLACE_ME",
+      appId: "REPLACE_ME"
+    };
+
+    // --- imports ---
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js';
+    import { getDatabase, ref, set, onValue, update, push, get, child, remove } from 'https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js';
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // --- UI ---
+    const createBtn = document.getElementById('createBtn');
+    const joinBtn = document.getElementById('joinBtn');
+    const nameInput = document.getElementById('nameInput');
+    const roomInput = document.getElementById('roomInput');
+    const lobbyInfo = document.getElementById('lobbyInfo');
+    const roomCodeEl = document.getElementById('roomCode');
+    const playersGrid = document.getElementById('playersGrid');
+    const startBtn = document.getElementById('startBtn');
+    const syncBtn = document.getElementById('syncBtn');
+
+    const gameArea = document.getElementById('gameArea');
+    const youNameEl = document.getElementById('youName');
+    const youRoleEl = document.getElementById('youRole');
+    const phaseText = document.getElementById('phaseText');
+    const nightPanel = document.getElementById('nightPanel');
+    const nightInstructions = document.getElementById('nightInstructions');
+    const nightTargets = document.getElementById('nightTargets');
+    const submitNight = document.getElementById('submitNight');
+    const dayPanel = document.getElementById('dayPanel');
+    const voteTargets = document.getElementById('voteTargets');
+    const submitVote = document.getElementById('submitVote');
+    const logEl = document.getElementById('log');
+    const endNightBtn = document.getElementById('endNightBtn');
+    const endDayBtn = document.getElementById('endDayBtn');
+    const hostControls = document.getElementById('hostControls');
+    const startBtnHost = startBtn;
+
+    let room = null;
+    let playerId = null;
+    let displayName = null;
+    let isHost = false;
+    let role = null;
+    let alive = true;
+    const MAX_PLAYERS = 12;
+
+    function log(msg){
+      const p = document.createElement('div'); p.textContent = msg; logEl.prepend(p);
+    }
+
+    function makeRoomCode(){ return Math.random().toString(36).substr(2,5).toUpperCase(); }
+
+    createBtn.onclick = async ()=>{
+      const code = makeRoomCode();
+      room = code;
+      playerId = 'P_' + Date.now() + '_' + Math.floor(Math.random()*9999);
+      displayName = nameInput.value.trim() || 'Player'+Math.floor(Math.random()*9000+1000);
+      isHost = true;
+
+      // create room in DB
+      const roomRef = ref(db, 'rooms/'+room);
+      await set(roomRef, {
+        host: playerId,
+        phase: 'lobby',
+        players: {
+          [playerId]: { name: displayName, alive: true }
+        }
+      });
+
+      enterLobby();
+    };
+
+    joinBtn.onclick = async ()=>{
+      room = (roomInput.value||'').trim().toUpperCase();
+      if(!room){ alert('Put room code or create first'); return; }
+      playerId = 'P_' + Date.now() + '_' + Math.floor(Math.random()*9999);
+      displayName = nameInput.value.trim() || 'Player'+Math.floor(Math.random()*9000+1000);
+
+      const roomRef = ref(db, 'rooms/'+room);
+      const snap = await get(roomRef);
+      if(!snap.exists()){ alert('Room not found'); return; }
+
+      const data = snap.val();
+      const players = data.players || {};
+      if(Object.keys(players).length >= MAX_PLAYERS){ alert('Room is full (max 12)'); return; }
+
+      await update(roomRef, { ['players/'+playerId]: { name: displayName, alive: true } });
+      enterLobby();
+    };
+
+    function enterLobby(){
+      document.getElementById('lobbyInfo').classList.remove('hidden');
+      roomCodeEl.textContent = room;
+      document.getElementById('menu')?.classList?.add('hidden');
+
+      // listen to room updates
+      const roomRef = ref(db, 'rooms/'+room);
+      onValue(roomRef, (snap)=>{
+        const val = snap.val();
+        if(!val) return;
+        const players = val.players || {};
+        renderPlayers(players, val.host);
+        const phase = val.phase || 'lobby';
+        if(phase === 'started' || phase === 'night' || phase === 'day'){
+          // show game area
+          gameArea.classList.remove('hidden');
+          document.getElementById('lobby')?.classList?.add('hidden');
+        }
+        phaseText.textContent = phase;
+
+        // if assigned roles stored
+        if(val.roles && val.roles[playerId]){
+          role = val.roles[playerId];
+          youNameEl.textContent = displayName + (alive? '' : ' (dead)');
+          youRoleEl.innerHTML = '<span class="role-badge">'+role+'</span>';
+        }
+
+        // host control visibility
+        isHost = (val.host === playerId);
+        if(isHost){
+          startBtn.classList.remove('hidden');
+          hostControls.classList.remove('hidden');
+          endNightBtn.classList.remove('hidden');
+          endDayBtn.classList.remove('hidden');
+        } else {
+          startBtn.classList.add('hidden');
+        }
+
+        // render phase-specific UI
+        if(phase === 'lobby'){
+          nightPanel.classList.add('hidden'); dayPanel.classList.add('hidden');
+        } else if(phase === 'night'){
+          renderNight(val);
+        } else if(phase === 'day'){
+          renderDay(val);
+        }
+
+        // game over check
+        if(val.winner){
+          log('Game Over: ' + val.winner);
+        }
+      });
+    }
+
+    function renderPlayers(players, hostId){
+      playersGrid.innerHTML = '';
+      Object.entries(players).forEach(([id,p])=>{
+        const d = document.createElement('div'); d.className='player';
+        d.innerHTML = `<strong>${p.name}</strong><br><small>${p.alive? 'Alive':'Dead'}</small>` + (hostId===id? ' <small>(Host)</small>':'');
+        playersGrid.appendChild(d);
+      });
+    }
+
+    // --- START GAME: assign roles ---
+    startBtn.onclick = async ()=>{
+      // read players
+      const r = await get(ref(db, 'rooms/'+room));
+      const val = r.val();
+      const players = Object.keys(val.players||{});
+      if(players.length < 4){ alert('Need at least 4 players'); return; }
+      // assign roles algorithm
+      const n = players.length;
+      const mafiaCount = Math.max(1, Math.floor(n/4));
+      const roles = [];
+      for(let i=0;i<mafiaCount;i++) roles.push('Mafia');
+      roles.push('Detective');
+      roles.push('Doctor');
+      while(roles.length < n) roles.push('Citizen');
+      // shuffle
+      for(let i=roles.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [roles[i],roles[j]]=[roles[j],roles[i]] }
+
+      const rolesMap = {};
+      players.forEach((pid,i)=> rolesMap[pid]=roles[i]);
+
+      await update(ref(db, 'rooms/'+room), { phase: 'night', startedAt: Date.now(), roles: rolesMap, votes: null, nightActions: null });
+      log('Game started — roles assigned. Night phase.');
+    };
+
+    // --- NIGHT ---
+    function renderNight(roomVal){
+      nightPanel.classList.remove('hidden'); dayPanel.classList.add('hidden');
+      nightInstructions.innerHTML = '';
+      nightTargets.innerHTML = '';
+
+      if(!role) return;
+      const players = roomVal.players || {};
+      const aliveList = Object.entries(players).filter(([id,p])=>p.alive).map(([id,p])=>({id,name:p.name}));
+
+      if(role === 'Mafia'){
+        nightInstructions.textContent = 'As Mafia: choose one player to kill. (If multiple Mafia, your last choice is the target)';
+        aliveList.forEach(pl=>{
+          if(pl.id===playerId) return;
+          const b = document.createElement('button'); b.textContent = pl.name; b.onclick = ()=> set(ref(db,'rooms/'+room+'/nightActions/kill'), pl.id);
+          nightTargets.appendChild(b);
+        });
+        submitNight.classList.remove('hidden'); submitNight.onclick = async ()=>{ alert('Kill chosen (saved). Host will resolve when night ends)'); };
+      } else if(role === 'Detective'){
+        nightInstructions.textContent = 'Detective: choose one player to investigate (you will see their role privately)';
+        aliveList.forEach(pl=>{ if(pl.id===playerId) return; const b=document.createElement('button'); b.textContent=pl.name; b.onclick=async ()=>{
+          await set(ref(db,'rooms/'+room+'/nightActions/investigate'), pl.id);
+          alert('Investigation requested — host will reveal result in the log.');
+        }; nightTargets.appendChild(b);} );
+      } else if(role === 'Doctor'){
+        nightInstructions.textContent = 'Doctor: choose one player to save (can save yourself)';
+        aliveList.forEach(pl=>{ const b=document.createElement('button'); b.textContent=pl.name; b.onclick=()=> set(ref(db,'rooms/'+room+'/nightActions/save'), pl.id); nightTargets.appendChild(b);} );
+        submitNight.classList.remove('hidden'); submitNight.onclick = async ()=>{ alert('Save chosen'); };
+      } else {
+        nightInstructions.textContent = 'You are a Citizen. Wait for night to end.';
+      }
+    }
+
+    // Host resolves night: called by host button
+    endNightBtn.onclick = async ()=>{
+      if(!isHost) return; // safety
+      const snap = await get(ref(db,'rooms/'+room)); if(!snap.exists()) return;
+      const val = snap.val();
+      const actions = (val.nightActions) || {};
+      const players = val.players || {};
+
+      const killId = actions.kill || null;
+      const saveId = actions.save || null;
+      let died = null;
+      if(killId && killId !== saveId){ died = killId; }
+
+      // apply death
+      if(died){
+        await update(ref(db,'rooms/'+room+'/players/'+died), { alive: false });
+        log('Night result: ' + (players[died]?.name || died) + ' was killed.');
+      } else {
+        log('Night result: no one died.');
+      }
+
+      // detective reveal
+      if(actions.investigate){
+        const target = actions.investigate; const roleT = val.roles?.[target];
+        // post to room log (host announces) — in a real game you might DM the detective
+        await push(ref(db,'rooms/'+room+'/publicLog'), { msg: `Detective investigated ${players[target]?.name}: role = ${roleT}` });
+        log('Detective result posted to log.');
+      }
+
+      // clear night actions and switch to day
+      await update(ref(db,'rooms/'+room), { phase: 'day', nightActions: null, votes: null });
+    };
+
+    // --- DAY render ---
+    function renderDay(roomVal){
+      dayPanel.classList.remove('hidden'); nightPanel.classList.add('hidden');
+      voteTargets.innerHTML = '';
+      const players = roomVal.players || {};
+      const aliveList = Object.entries(players).filter(([id,p])=>p.alive).map(([id,p])=>({id,name:p.name}));
+      aliveList.forEach(pl=>{ const b=document.createElement('button'); b.textContent=pl.name; b.onclick=()=> set(ref(db,'rooms/'+room+'/votes/'+playerId), pl.id); voteTargets.appendChild(b); });
+    }
+
+    submitVote.onclick = async ()=>{
+      alert('Vote saved. Host will tally when day ends.');
+    };
+
+    // host tallies votes
+    endDayBtn.onclick = async ()=>{
+      if(!isHost) return;
+      const snap = await get(ref(db,'rooms/'+room)); if(!snap.exists()) return;
+      const val = snap.val();
+      const votes = val.votes || {};
+      // count
+      const tally = {};
+      Object.values(votes).forEach(v=> tally[v] = (tally[v]||0)+1);
+      let top = null; let topCount = 0;
+      Object.entries(tally).forEach(([id,c])=>{ if(c>topCount){ top=id; topCount=c; } });
+      if(top){
+        await update(ref(db,'rooms/'+room+'/players/'+top), { alive: false });
+        log('Day vote: ' + (val.players[top]?.name || top) + ' was eliminated.');
+      } else log('Day vote: no elimination.');
+
+      // reset votes and go to night
+      await update(ref(db,'rooms/'+room), { phase: 'night', votes: null });
+    };
+
+    // show public log updates
+    onValue(ref(db,'rooms'), (s)=>{
+      // noop - room-specific handled above
+    });
+
+    // helper: when publicLog item pushed, show it
+    onValue(ref(db), (snap)=>{
+      // naive: check publicLog under room
+      if(!room) return;
+      get(ref(db,'rooms/'+room+'/publicLog')).then(ps=>{
+        if(!ps.exists()) return;
+        const items = ps.val();
+        Object.values(items).forEach(it=> log('[Log] '+it.msg));
+      });
+    });
+
+    // cleanup on unload
+    window.addEventListener('beforeunload', ()=>{
+      // optionally remove player from room (left as exercise) -- keep it simple
+    });
+
+  </script>
+</body>
+</html>
